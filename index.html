@@ -1,0 +1,1293 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signOut, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, query, deleteDoc, doc, updateDoc, setDoc, getDoc, increment, getDocs } from 'firebase/firestore';
+
+// Global variables provided by the Canvas environment
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? initialAuthToken : null; 
+
+// Initialize Firebase App
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+// Main App Component
+const App = () => {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [loginUsername, setLoginUsername] = useState(''); // This will store the user's display name
+  const [loginPassword, setLoginPassword] = useState(''); // State for password
+  const [message, setMessage] = useState('');
+  const [userId, setUserId] = useState(null);
+  const [upcomingEvents, setUpcomingEvents] = useState([]); // State for "Eventos Próximos" (future events)
+  const [pastEvents, setPastEvents] = useState([]); // State for "Eventos Recentes" (past events)
+  const [newsArticles, setNewsArticles] = useState([]); // State for news articles
+  const [registeredUsers, setRegisteredUsers] = useState([]); // New state for registered users
+  const [isAuthReady, setIsAuthReady] = useState(false); // To track Firebase auth readiness
+  const [isRegistering, setIsRegistering] = useState(false); // State to switch between login/register views
+  const [currentPage, setCurrentPage] = useState('home'); // 'home', 'news', 'profile', 'admin', 'agenda'
+  const [profileImageUrl, setProfileImageUrl] = useState('https://placehold.co/100x100/CCCCCC/FFFFFF?text=Avatar'); // Default avatar
+  const [userRole, setUserRole] = useState('user'); // New state for user role: 'user' or 'admin'
+  const [newEventDate, setNewEventDate] = useState(''); // State for adding event date
+  const [newEventImageUrl, setNewEventImageUrl] = useState(''); // New state for event image URL
+  const [commentsByEvent, setCommentsByEvent] = useState({}); // Stores comments for each event {eventId: [comments]}
+  const [lastLoggedInUser, setLastLoggedInUser] = useState(null); // Stores last logged in user from localStorage
+  const [mainBanner, setMainBanner] = useState({ 
+    imageUrl: 'https://i.ibb.co/spmXc4gW/FACE-A-FACE-c-pia.png', // Default banner image
+    link: '' 
+  }); 
+  const [showAddEventModal, setShowAddEventModal] = useState(false); // New state to control modal visibility
+
+  // Updated Google Calendar embed with new color
+  const googleCalendarEmbed = `
+    <iframe src="https://calendar.google.com/calendar/embed?height=600&wkst=1&ctz=America%2FSao_Paulo&showPrint=0&src=NWM5YmEzNDZmYzc0YzM1YjM2ZmFjNTlkYTExZWEwYWNmYjB2ZTk0ZjVlNDhkNjBmYjgyYjg3ZWJjNmVlOUBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&color=%234285f4"
+            style="border:solid 1px #777; width:100%; height:600px; border-radius: 0.75rem;" frameborder="0" scrolling="no"></iframe>
+  `;
+
+  // Function to get reaction button styles
+  const getReactionButtonClass = (reactionType) => {
+    switch (reactionType) {
+      case 'feliz': return 'bg-yellow-400 hover:bg-yellow-500 text-yellow-900';
+      case 'alegre': return 'bg-green-400 hover:bg-green-500 text-green-900';
+      case 'surpreso': return 'bg-purple-400 hover:bg-purple-500 text-purple-900';
+      case 'interessado': return 'bg-blue-400 hover:bg-blue-500 text-blue-900';
+      case 'participarei': return 'bg-red-400 hover:bg-red-500 text-red-900';
+      default: return 'bg-gray-200 hover:bg-gray-300 text-gray-700';
+    }
+  };
+
+  useEffect(() => {
+    // Load last logged in user from local storage on initial render
+    const storedLastUser = localStorage.getItem('lastLoggedInUser');
+    if (storedLastUser) {
+        const parsedUser = JSON.parse(storedLastUser);
+        setLastLoggedInUser(parsedUser);
+        setLoginUsername(parsedUser.username); // Pre-fill username field
+    }
+
+    // Authenticate with Firebase and listen for auth state changes
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setUserId(user.uid);
+        setIsAuthReady(true); // Auth is ready, now load user data
+
+        // Load display name, profile image, and user role for the currently authenticated user
+        const userProfileRef = doc(db, `artifacts/${appId}/users/${user.uid}/profile`, 'userProfile');
+        try {
+            const userProfileSnap = await getDoc(userProfileRef);
+            if (userProfileSnap.exists()) {
+                const data = userProfileSnap.data();
+                setLoginUsername(data.displayName || '');
+                setProfileImageUrl(data.profileImageUrl || 'https://placehold.co/100x100/CCCCCC/FFFFFF?text=Avatar');
+                setUserRole(data.role || 'user');
+                // Check if user is already logged in (e.g. from previous successful login stored in localStorage)
+                const storedIsLoggedIn = localStorage.getItem('isLoggedIn') === 'true';
+                if (storedIsLoggedIn) {
+                    setIsLoggedIn(true);
+                }
+            } else {
+                setLoginUsername('');
+                setProfileImageUrl('https://placehold.co/100x100/CCCCCC/FFFFFF?text=Avatar');
+                setUserRole('user');
+            }
+        } catch (error) {
+            console.error("Erro ao carregar informações de perfil:", error);
+            // Do NOT set message here as it can be a temporary permission issue during auth setup
+            // setMessage({ type: 'error', text: "Erro ao carregar informações de perfil." });
+        }
+
+      } else {
+        // User logged out or no user is present
+        setUserId(null);
+        setIsLoggedIn(false); // Explicitly ensure not logged in
+        setIsAuthReady(true);
+        setLoginUsername(''); // Clear username on logout
+        setLoginPassword(''); // Clear password on logout
+        setProfileImageUrl('https://placehold.co/100x100/CCCCCC/FFFFFF?text=Avatar'); // Reset photo
+        setUserRole('user'); // Reset role
+        setCurrentPage('home'); // Reset page
+        
+        // Always try to sign in anonymously if no user is present
+        const setupAnonymousAuth = async () => {
+          try {
+            if (initialAuthToken) {
+              await signInWithCustomToken(auth, initialAuthToken);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (error) {
+            console.error("Erro na autenticação Firebase (anônima):", error);
+            setMessage({ type: 'error', text: "Erro ao conectar ao serviço de dados." });
+          }
+        };
+        setupAnonymousAuth();
+      }
+    });
+
+    return () => unsubscribeAuth();
+  }, [db, initialAuthToken, appId, userId]); // Removed isLoggedIn from dependencies to ensure explicit login
+
+  // Listen for all events data changes and filter them into upcoming/past
+  useEffect(() => {
+    let unsubscribeEvents;
+    // Only attach listener if Firebase is ready and user is authenticated (even anonymously)
+    if (db && userId && isAuthReady) { // Ensure userId is present before attaching listener
+      const q = query(collection(db, `artifacts/${appId}/public/data/volunteerFunctions`));
+      unsubscribeEvents = onSnapshot(q, async (snapshot) => { // Made async to await comments fetch
+        const allEvents = snapshot.docs.map(doc => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            ...data,
+            date: data.date ? new Date(data.date + 'T00:00:00') : null, 
+            reactions: data.reactions || { feliz: 0, alegre: 0, surpreso: 0, interessado: 0, participarei: 0 }
+          };
+        });
+
+        const now = new Date();
+        now.setHours(0, 0, 0, 0); 
+
+        const upcoming = allEvents.filter(event => event.date && event.date >= now);
+        const past = allEvents.filter(event => event.date && event.date < now);
+
+        upcoming.sort((a, b) => a.date.getTime() - b.date.getTime());
+        past.sort((a, b) => b.date.getTime() - a.date.getTime());
+
+        setUpcomingEvents(upcoming);
+        setPastEvents(past);
+
+        const newCommentsByEvent = {};
+        for (const event of allEvents) {
+            const commentsSnapshot = await getDocs(collection(db, `artifacts/${appId}/public/data/volunteerFunctions/${event.id}/comments`));
+            
+            const commentsWithAvatars = await Promise.all(commentsSnapshot.docs.map(async doc => {
+                const commentData = doc.data();
+                let commenterProfileImage = commentData.profileImageUrl || 'https://placehold.co/30x30/CCCCCC/FFFFFF?text=Anon'; 
+                
+                if (!commentData.profileImageUrl && commentData.commentedBy) { 
+                    try {
+                        const userProfileRef = doc(db, `artifacts/${appId}/users/${commentData.commentedBy}/profile`, 'userProfile');
+                        const userProfileSnap = await getDoc(userProfileRef);
+                        if (userProfileSnap.exists()) {
+                            commenterProfileImage = userProfileSnap.data().profileImageUrl || commenterProfileImage;
+                        }
+                    } catch (error) {
+                        console.error("Erro ao buscar foto de perfil do comentarista:", error);
+                    }
+                }
+                return {
+                    id: doc.id,
+                    ...commentData,
+                    profileImageUrl: commenterProfileImage 
+                };
+            }));
+            newCommentsByEvent[event.id] = commentsWithAvatars.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)); 
+        }
+        setCommentsByEvent(newCommentsByEvent);
+
+      }, (error) => {
+        console.error("Erro ao buscar eventos:", error);
+        setMessage({ type: 'error', text: "Erro ao carregar eventos." });
+      });
+    }
+
+    return () => {
+      if (unsubscribeEvents) {
+        unsubscribeEvents();
+      }
+    };
+  }, [db, userId, isAuthReady, appId]);
+
+  // Listen for news articles data changes
+  useEffect(() => {
+    let unsubscribeNews;
+    if (db && userId && isAuthReady) { // Ensure userId is present before attaching listener
+      const q = query(collection(db, `artifacts/${appId}/public/data/newsArticles`));
+      unsubscribeNews = onSnapshot(q, (snapshot) => {
+        const articlesData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setNewsArticles(articlesData.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))); 
+      }, (error) => {
+        console.error("Erro ao buscar notícias:", error);
+        setMessage({ type: 'error', text: "Erro ao carregar notícias." });
+      });
+    }
+
+    return () => {
+      if (unsubscribeNews) {
+        unsubscribeNews();
+      }
+    };
+  }, [db, userId, isAuthReady, appId]); // Added userId to dependencies
+
+  // Listen for registered users for admin panel
+  useEffect(() => {
+    let unsubscribeUsers;
+    // Only fetch if admin and auth ready, or if db and authReady are available to populate
+    if (db && userId && isAuthReady && userRole === 'admin') { // Ensure userId is present
+      const q = query(collection(db, `artifacts/${appId}/public/data/userCredentials`));
+      unsubscribeUsers = onSnapshot(q, (snapshot) => {
+        const usersData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setRegisteredUsers(usersData);
+      }, (error) => {
+        console.error("Erro ao buscar usuários registrados:", error);
+        // Do not set message here to avoid spamming for background listener
+      });
+    }
+    return () => {
+      if (unsubscribeUsers) {
+        unsubscribeUsers();
+      }
+    };
+  }, [db, userId, userRole, isAuthReady, appId]); // Added userId to dependencies
+
+  // Listen for main banner data
+  useEffect(() => {
+    let unsubscribeBanner;
+    if (db && userId && isAuthReady) { // Ensure userId is present
+      const bannerDocRef = doc(db, `artifacts/${appId}/public/data/appSettings`, 'mainBanner');
+      unsubscribeBanner = onSnapshot(bannerDocRef, (docSnap) => {
+        if (docSnap.exists()) {
+          setMainBanner(docSnap.data());
+        } else {
+          setMainBanner({ imageUrl: 'https://i.ibb.co/spmXc4gW/FACE-A-FACE-c-pia.png', link: '' }); // Default to Face a Face image
+        }
+      }, (error) => {
+        console.error("Erro ao buscar dados do banner:", error);
+      });
+    }
+    return () => {
+      if (unsubscribeBanner) {
+        unsubscribeBanner();
+      }
+    };
+  }, [db, userId, isAuthReady, appId]); // Added userId to dependencies
+
+  // Handle Login
+  const handleLogin = async () => {
+    const trimmedUsername = loginUsername.trim();
+    if (trimmedUsername === '' || loginPassword.trim() === '') {
+      setMessage({ type: 'error', text: 'Por favor, preencha todos os campos.' });
+      return;
+    }
+
+    try {
+      const userDocRef = doc(db, `artifacts/${appId}/public/data/userCredentials`, trimmedUsername.toLowerCase());
+      const userDocSnap = await getDoc(userDocRef);
+
+      if (userDocSnap.exists() && userDocSnap.data().password === loginPassword) {
+        const loggedInRole = (trimmedUsername.toLowerCase() === 'elpepe' && loginPassword === '123') ? 'admin' : (userDocSnap.data().role || 'user');
+        setUserRole(loggedInRole);
+        setIsLoggedIn(true); // Set logged in only after successful credentials match
+        setMessage({ type: 'success', text: `Bem-vindo(a), ${trimmedUsername}!` });
+
+        // Update loginUsername state with the authenticated user's display name
+        setLoginUsername(userDocSnap.data().displayName || trimmedUsername);
+
+        // Fetch profile image after successful login
+        const userProfileRef = doc(db, `artifacts/${appId}/users/${userDocSnap.data().firebaseUid}/profile`, 'userProfile');
+        const userProfileSnap = await getDoc(userProfileRef);
+        let currentProfileImageUrl = 'https://placehold.co/100x100/CCCCCC/FFFFFF?text=Avatar';
+        if (userProfileSnap.exists()) {
+          currentProfileImageUrl = userProfileSnap.data().profileImageUrl || currentProfileImageUrl;
+        } 
+        setProfileImageUrl(currentProfileImageUrl);
+
+        // Store last logged in user in localStorage
+        localStorage.setItem('lastLoggedInUser', JSON.stringify({ username: trimmedUsername, profileImageUrl: currentProfileImageUrl }));
+        localStorage.setItem('isLoggedIn', 'true'); // Persist login state
+
+
+      } else {
+        setMessage({ type: 'error', text: 'Nome de usuário ou senha incorretos.' });
+      }
+    } catch (error) {
+      console.error("Erro ao tentar fazer login:", error);
+      setMessage({ type: 'error', text: "Erro ao tentar fazer login. Tente novamente mais tarde." });
+    }
+  };
+
+  // Handle Registration
+  const handleRegister = async () => {
+    const trimmedUsername = loginUsername.trim();
+    if (trimmedUsername === '' || loginPassword.trim() === '') {
+      setMessage({ type: 'error', text: 'Por favor, preencha todos os campos.' });
+      return;
+    }
+
+    try {
+      const userDocRef = doc(db, `artifacts/${appId}/public/data/userCredentials`, trimmedUsername.toLowerCase());
+      const userDocSnap = await getDoc(userDocRef);
+
+      if (userDocSnap.exists()) {
+        setMessage({ type: 'error', text: 'Este nome de usuário já está em uso.' });
+        return;
+      }
+
+      // Ensure userId is available from Firebase anonymous auth
+      if (!userId) {
+        setMessage({ type: 'error', text: "Aguardando conexão com o serviço de usuário. Tente novamente." });
+        return;
+      }
+
+      // Default new registrations to 'user' role
+      const roleToAssign = 'user'; 
+
+      // Save new user credentials
+      await setDoc(userDocRef, {
+        password: loginPassword, // WARNING: In a real app, hash this password!
+        firebaseUid: userId, // Link to the anonymous Firebase UID
+        registeredAt: new Date().toISOString(),
+        displayName: trimmedUsername, // Store display name for user profile
+        role: roleToAssign // Store the assigned role
+      });
+
+      // Also set initial profile image for the new user in their private space
+      const userProfileRef = doc(db, `artifacts/${appId}/users/${userId}/profile`, 'userProfile');
+      await setDoc(userProfileRef, { profileImageUrl: 'https://placehold.co/100x100/CCCCCC/FFFFFF?text=Avatar', role: roleToAssign }, { merge: true }); // Default avatar and role
+
+      // After successful registration, redirect to login page
+      setIsLoggedIn(false); // Ensure user is not logged in yet, force manual login
+      setIsRegistering(false); // Switch to login view
+      setLoginUsername(''); // Clear fields
+      setLoginPassword(''); // Clear fields
+      setMessage({ type: 'success', text: `Parabéns, seja bem-vindo(a), ${trimmedUsername}! Faça login com suas novas credenciais.` }); // Success message with type
+    } catch (error) {
+      console.error("Erro ao tentar cadastrar:", error);
+      setMessage({ type: 'error', text: "Erro ao tentar cadastrar. Tente novamente mais tarde." }); // Error message with type
+    }
+  };
+
+  const handleLogout = async () => { // Made async for signOut
+      setIsLoggedIn(false);
+      setLoginUsername('');
+      setLoginPassword('');
+      setProfileImageUrl('https://placehold.co/100x100/CCCCCC/FFFFFF?text=Avatar');
+      setUserRole('user');
+      setCurrentPage('home');
+      localStorage.removeItem('isLoggedIn'); // Clear login status from local storage
+      localStorage.removeItem('lastLoggedInUser'); // Clear lastLoggedInUser from localStorage
+      setMessage({ type: 'success', text: 'Você deslogou com sucesso!' });
+      
+      // Ensure Firebase anonymous user is signed out
+      try {
+          await auth.signOut();
+      } catch (error) {
+          console.error("Error signing out:", error);
+      }
+  };
+
+  const handleUpdateProfileImage = async () => {
+    if (userId && profileImageUrl.trim() !== '') {
+      try {
+        const userProfileRef = doc(db, `artifacts/${appId}/users/${userId}/profile`, 'userProfile');
+        await setDoc(userProfileRef, { profileImageUrl: profileImageUrl.trim() }, { merge: true });
+        setMessage({ type: 'success', text: 'Foto de perfil atualizada!' });
+      } catch (error) {
+        console.error("Erro ao atualizar foto de perfil:", error);
+        setMessage({ type: 'error', text: "Erro ao atualizar foto de perfil." });
+      }
+    } else {
+      setMessage({ type: 'error', text: "Por favor, insira uma URL de imagem válida." });
+    }
+  };
+
+  const addEvent = async (e) => { 
+    e.preventDefault();
+    const newEventName = e.target.elements.eventName.value.trim(); 
+    const eventDate = newEventDate; 
+    const eventImageUrl = e.target.elements.eventImageUrl.value.trim(); // Get image URL for event
+
+    if (newEventName === '' || eventDate === '') {
+      setMessage({ type: 'error', text: "Por favor, digite o nome e selecione a data do evento." });
+      return;
+    }
+
+    if (userId && userRole === 'admin') {
+      try {
+        await addDoc(collection(db, `artifacts/${appId}/public/data/volunteerFunctions`), { 
+          name: newEventName,
+          date: eventDate, 
+          imageUrl: eventImageUrl, // Save event image URL
+          addedBy: userId,
+          addedByName: loginUsername,
+          timestamp: new Date().toISOString(),
+          reactions: {
+            feliz: 0,
+            alegre: 0,
+            surpreso: 0,
+            interessado: 0,
+            participarei: 0
+          }
+        });
+        e.target.elements.eventName.value = '';
+        setNewEventDate(''); 
+        setNewEventImageUrl(''); // Clear image URL field
+        setMessage({ type: 'success', text: 'Evento adicionado!' });
+        setShowAddEventModal(false); // Close modal on success
+      } catch (error) {
+        console.error("Erro ao adicionar evento:", error);
+        setMessage({ type: 'error', text: "Erro ao adicionar evento." });
+      }
+    } else {
+      setMessage({ type: 'error', text: "Você não tem permissão para adicionar eventos." });
+    }
+  };
+
+  const deleteEvent = async (id) => { 
+    if (userId && userRole === 'admin') {
+      try {
+        await deleteDoc(doc(db, `artifacts/${appId}/public/data/volunteerFunctions`, id));
+        setMessage({ type: 'success', text: 'Evento removido!' });
+      } catch (error) {
+        console.error("Erro ao remover evento:", error);
+        setMessage({ type: 'error', text: "Erro ao remover evento." });
+      }
+    } else {
+        setMessage({ type: 'error', text: "Você não tem permissão para remover eventos." });
+    }
+  };
+
+  const updateEvent = async (id, currentEvent) => { // Modified to pass currentEvent for easier editing
+    if (userId && userRole === 'admin') {
+        const newName = prompt("Editar nome do evento:", currentEvent.name);
+        if (newName === null || newName.trim() === '') {
+            setMessage({ type: 'error', text: "Nome do evento não pode ser vazio." });
+            return;
+        }
+        const newDate = prompt("Editar data do evento (AAAA-MM-DD):", currentEvent.date ? currentEvent.date.toISOString().substring(0, 10) : '');
+        if (newDate === null) return;
+        const newImageUrl = prompt("Editar URL da imagem do evento:", currentEvent.imageUrl || '');
+        if (newImageUrl === null) return;
+
+        try {
+            await updateDoc(doc(db, `artifacts/${appId}/public/data/volunteerFunctions`, id), {
+                name: newName.trim(),
+                date: newDate,
+                imageUrl: newImageUrl.trim()
+            });
+            setMessage({ type: 'success', text: 'Evento atualizado!' });
+        } catch (error) {
+            console.error("Erro ao atualizar evento:", error);
+            setMessage({ type: 'error', text: "Erro ao atualizar evento." });
+        }
+    } else {
+        setMessage({ type: 'error', text: "Você não tem permissão para atualizar eventos." });
+    }
+  };
+
+
+  const handleReactToEvent = async (eventId, reactionType) => {
+    if (!userId) {
+      setMessage({ type: 'error', text: "Faça login para reagir a eventos." });
+      return;
+    }
+    try {
+      const eventDocRef = doc(db, `artifacts/${appId}/public/data/volunteerFunctions`, eventId);
+      await updateDoc(eventDocRef, {
+        [`reactions.${reactionType}`]: increment(1) // Increment the specific reaction count
+      });
+      setMessage({ type: 'success', text: `Você reagiu com '${reactionType}'!` });
+    } catch (error) {
+      console.error("Erro ao reagir ao evento:", error);
+      setMessage({ type: 'error', text: "Erro ao reagir ao evento. Tente novamente." });
+    }
+  };
+
+  const handleAddComment = async (eventId, commentText) => {
+    if (!userId) {
+      setMessage({ type: 'error', text: "Faça login para comentar." });
+      return;
+    }
+    if (commentText.trim() === '') {
+      setMessage({ type: 'error', text: "O comentário não pode estar vazio." });
+      return;
+    }
+    try {
+      await addDoc(collection(db, `artifacts/${appId}/public/data/volunteerFunctions/${eventId}/comments`), {
+        text: commentText.trim(),
+        commentedBy: userId,
+        commentedByName: loginUsername,
+        profileImageUrl: profileImageUrl, // Store commenter's profile image
+        timestamp: new Date().toISOString()
+      });
+      setMessage({ type: 'success', text: "Comentário adicionado!" });
+      // The onSnapshot for events will re-fetch comments, so no direct state update needed here.
+    } catch (error) {
+      console.error("Erro ao adicionar comentário:", error);
+      setMessage({ type: 'error', text: "Erro ao adicionar comentário. Tente novamente." });
+    }
+  };
+
+  // Admin Panel Functions for News Management
+  const handleAddNewsArticle = async (e) => {
+    e.preventDefault();
+    if (userRole !== 'admin') {
+      setMessage({ type: 'error', text: "Você não tem permissão para adicionar notícias." });
+      return;
+    }
+    const title = e.target.elements.newsTitle.value.trim();
+    const description = e.target.elements.newsDescription.value.trim();
+    const imageUrl = e.target.elements.newsImageUrl.value.trim();
+    const link = e.target.elements.newsLink.value.trim();
+
+    if (!title || !description) {
+      setMessage({ type: 'error', text: "Título e descrição da notícia são obrigatórios." });
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, `artifacts/${appId}/public/data/newsArticles`), {
+        title,
+        description,
+        imageUrl,
+        link,
+        timestamp: new Date().toISOString(),
+        addedBy: userId,
+        addedByName: loginUsername
+      });
+      e.target.reset();
+      setMessage({ type: 'success', text: "Notícia adicionada com sucesso!" });
+      setCurrentPage('news'); // Redirect to news page after adding
+    } catch (error) {
+      console.error("Erro ao adicionar notícia:", error);
+      setMessage({ type: 'error', text: "Erro ao adicionar notícia. Tente novamente." });
+    }
+  };
+
+  const handleEditNewsArticle = async (articleId, currentArticle) => {
+    if (userRole !== 'admin') {
+      setMessage({ type: 'error', text: "Você não tem permissão para editar notícias." });
+      return;
+    }
+    const newTitle = prompt("Editar Título:", currentArticle.title);
+    if (newTitle === null) return;
+    const newDescription = prompt("Editar Descrição:", currentArticle.description);
+    if (newDescription === null) return;
+    const newImageUrl = prompt("Editar URL da Imagem (opcional):", currentArticle.imageUrl || '');
+    const newLink = prompt("Editar Link (opcional):", currentArticle.link || '');
+
+    if (!newTitle || !newDescription) {
+        setMessage({ type: 'error', text: "Título e descrição não podem ser vazios." });
+        return;
+    }
+
+    try {
+      await updateDoc(doc(db, `artifacts/${appId}/public/data/newsArticles`, articleId), {
+        title: newTitle.trim(),
+        description: newDescription.trim(),
+        imageUrl: newImageUrl.trim(),
+        link: newLink.trim(),
+        updatedAt: new Date().toISOString()
+      });
+      setMessage({ type: 'success', text: "Notícia atualizada com sucesso!" });
+    } catch (error) {
+      console.error("Erro ao editar notícia:", error);
+      setMessage({ type: 'error', text: "Erro ao editar notícia. Tente novamente." });
+    }
+  };
+
+  const handleDeleteNewsArticle = async (articleId) => {
+    if (userRole !== 'admin') {
+      setMessage({ type: 'error', text: "Você não tem permissão para remover notícias." });
+      return;
+    }
+    if (window.confirm("Tem certeza que deseja remover esta notícia?")) {
+      try {
+        await deleteDoc(doc(db, `artifacts/${appId}/public/data/newsArticles`, articleId));
+        setMessage({ type: 'success', text: "Notícia removida com sucesso!" });
+      }
+      catch (error) {
+        console.error("Erro ao remover notícia:", error);
+        setMessage({ type: 'error', text: "Erro ao remover notícia. Tente novamente." });
+      }
+    }
+  };
+
+  // Admin Panel Function to delete a user
+  const handleDeleteUser = async (usernameToDelete, firebaseUidToDelete) => {
+      if (userRole !== 'admin') {
+          setMessage({ type: 'error', text: "Você não tem permissão para remover usuários." });
+          return;
+      }
+      if (window.confirm(`Tem certeza que deseja remover o usuário ${usernameToDelete}? Esta ação é irreversível.`)) {
+          try {
+              // Delete from public userCredentials
+              await deleteDoc(doc(db, `artifacts/${appId}/public/data/userCredentials`, usernameToDelete.toLowerCase()));
+              
+              // Optionally delete private profile data (more thorough cleanup)
+              if (firebaseUidToDelete) {
+                  await deleteDoc(doc(db, `artifacts/${appId}/users/${firebaseUidToDelete}/profile`, 'userProfile'));
+              }
+              
+              setMessage({ type: 'success', text: `Usuário ${usernameToDelete} removido com sucesso!` });
+          } catch (error) {
+              console.error("Erro ao remover usuário:", error);
+              setMessage({ type: 'error', text: "Erro ao remover usuário. Tente novamente." });
+          }
+      }
+  };
+
+  // Admin Panel Function to manage main banner
+  const handleUpdateMainBanner = async (e) => {
+    e.preventDefault();
+    if (userRole !== 'admin') {
+      setMessage({ type: 'error', text: "Você não tem permissão para gerenciar o banner." });
+      return;
+    }
+    const imageUrl = e.target.elements.bannerImageUrl.value.trim();
+    const link = e.target.elements.bannerLink.value.trim();
+
+    if (!imageUrl) {
+      setMessage({ type: 'error', text: "A URL da imagem do banner é obrigatória." });
+      return;
+    }
+
+    try {
+      const bannerDocRef = doc(db, `artifacts/${appId}/public/data/appSettings`, 'mainBanner');
+      await setDoc(bannerDocRef, { imageUrl, link, updatedAt: new Date().toISOString() }, { merge: true });
+      setMessage({ type: 'success', text: "Banner principal atualizado com sucesso!" });
+    } catch (error) {
+      console.error("Erro ao atualizar banner:", error);
+      setMessage({ type: 'error', text: "Erro ao atualizar banner. Tente novamente." });
+    }
+  };
+
+
+  // Determine current view based on login state
+  const renderContent = () => {
+    if (!isAuthReady) {
+      return (
+        <div className="flex justify-center items-center h-screen bg-gray-100">
+          <p className="text-xl text-gray-700 animate-pulse">Carregando Firebase...</p>
+        </div>
+      );
+    }
+
+    if (!isLoggedIn) {
+      // Login/Registration view with custom styling
+      return (
+        <div className="login-page-container">
+          <style>
+            {`
+              /* Keyframes for background animation */
+              @keyframes gradientShift {
+                0% { background-position: 0% 50%; }
+                50% { background-position: 100% 50%; }
+                100% { background-position: 0% 50%; }
+              }
+
+              .login-page-container {
+                font-family: Arial, Helvetica, sans-serif;
+                background-image: linear-gradient(45deg, #00FFFF, #8A2BE2, #FFFF00); /* Cyan, Purple, Yellow */
+                background-size: 400% 400%; /* Larger background to allow movement */
+                animation: gradientShift 15s ease infinite; /* Apply animation */
+                min-height: 100vh; /* Ensure it covers full height */
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 20px; /* Add some padding for smaller screens */
+              }
+              .login-box {
+                background-color: rgba(0, 0, 0, 0.9);
+                padding: 80px;
+                border-radius: 15px;
+                color: #fff;
+                max-width: 90%; /* Responsive adjustment */
+                width: 400px; /* Max width for the box */
+                box-sizing: border-box; /* Include padding in width */
+              }
+              .login-box h1 {
+                text-align: center;
+                margin-bottom: 30px;
+                font-size: 2.5rem; /* Larger for better readability */
+              }
+              .login-box input {
+                padding: 15px;
+                border: none;
+                outline: none;
+                font-size: 15px;
+                width: calc(100% - 30px); /* Adjust for padding */
+                margin-bottom: 20px; /* Space between inputs */
+                border-radius: 5px; /* Slightly rounded corners for inputs */
+                color: #333; /* Ensure text is visible */
+                background-color: #f0f0f0; /* Light background for input fields */
+              }
+              .login-box button {
+                background-color: dodgerblue;
+                border: none;
+                padding: 15px;
+                width: 100%;
+                border-radius: 10px;
+                color: white;
+                font-size: 15px;
+                cursor: pointer;
+                transition: background-color 0.3s ease;
+                margin-top: 10px; /* Space above buttons */
+              }
+              .login-box button:hover {
+                background-color: deepskyblue;
+              }
+              .login-box .toggle-button {
+                background: none;
+                color: dodgerblue;
+                text-decoration: underline;
+                font-size: 14px;
+                margin-top: 20px;
+                border-radius: 0; /* Remove border-radius for link-like button */
+                padding: 5px;
+              }
+              .login-box .toggle-button:hover {
+                color: deepskyblue;
+                background: none;
+              }
+              .login-box .message {
+                margin-bottom: 15px;
+                padding: 10px;
+                border-radius: 5px;
+                text-align: center;
+                font-size: 0.9em;
+              }
+              .login-box .message.error {
+                background-color: #ffcccc; /* Light red for error messages */
+                color: #cc0000; /* Dark red text */
+              }
+              .login-box .message.success {
+                background-color: #d4edda; /* Light green for success messages */
+                color: #155724; /* Dark green text */
+              }
+              .login-box .hint-text {
+                color: #ccc; /* Lighter color for hint */
+                font-size: 0.85em;
+                text-align: center;
+                margin-top: 25px;
+              }
+            `}
+          </style>
+          <div className="login-box">
+            <h1>Seja bem-vindo(a)</h1> {/* Changed title */}
+            {message && (
+              <div className={`message ${message.type}`}>
+                {message.text}
+              </div>
+            )}
+            {/* Display last logged in user info if available, but keep input editable */}
+            {lastLoggedInUser && !isRegistering && ( 
+                <div className="flex flex-col items-center mb-4">
+                    <img src={lastLoggedInUser.profileImageUrl || 'https://placehold.co/80x80/CCCCCC/FFFFFF?text=Anon'} 
+                         alt="Último usuário" 
+                         className="w-20 h-20 rounded-full object-cover border-2 border-gray-400 mb-2" />
+                    <p className="text-gray-300">Última sessão: <span className="font-bold">{lastLoggedInUser.username}</span></p>
+                    <button 
+                        onClick={() => { setLastLoggedInUser(null); setLoginUsername(''); setProfileImageUrl('https://placehold.co/100x100/CCCCCC/FFFFFF?text=Avatar'); }} 
+                        className="text-xs text-red-400 hover:text-red-600 mt-1"
+                    >
+                        Limpar Última Sessão
+                    </button>
+                </div>
+            )}
+            <input 
+              type="text" 
+              placeholder="Nome de Usuário"
+              value={loginUsername}
+              onChange={(e) => setLoginUsername(e.target.value)}
+            />
+            <input 
+              type="password" 
+              placeholder="Senha"
+              value={loginPassword}
+              onChange={(e) => setLoginPassword(e.target.value)}
+            />
+            {isRegistering ? (
+              <button onClick={handleRegister}>Cadastrar</button>
+            ) : (
+              <button onClick={handleLogin}>Entrar</button>
+            )}
+            <button 
+              className="toggle-button"
+              onClick={() => { 
+                setIsRegistering(!isRegistering); 
+                setMessage(''); 
+                setLoginUsername(''); // Clear username on toggle
+                setLoginPassword(''); // Clear password on toggle
+              }}
+            >
+              {isRegistering ? 'Já tenho uma conta.' : 'Não tenho uma conta? Cadastre-se.'}
+            </button>
+            <p className="hint-text">
+              Dica: se tiver problemas, notifique o Líder da área.
+            </p>
+          </div>
+        </div>
+      );
+    } else {
+      // Main app content (logged in)
+      return (
+        <div className="min-h-screen bg-gray-50 font-inter">
+          {/* Header Section */}
+          <header className="bg-blue-600 text-white p-4 shadow-md rounded-b-xl">
+            <div className="container mx-auto flex justify-between items-center px-4">
+                <h1 className="text-2xl font-bold">MÍDIA IBG</h1> {/* Changed title to MÍDIA IBG */}
+                <nav>
+                    <ul className="flex space-x-4">
+                        <li><a href="#" onClick={() => setCurrentPage('home')} className="hover:text-blue-200 transition-colors duration-300">Início</a></li>
+                        <li><a href="#" onClick={() => setCurrentPage('agenda')} className="hover:text-blue-200 transition-colors duration-300">Agenda</a></li> {/* New Agenda tab */}
+                        <li><a href="#" onClick={() => setCurrentPage('news')} className="hover:text-blue-200 transition-colors duration-300">News</a></li>
+                        <li><a href="#" onClick={() => setCurrentPage('profile')} className="hover:text-blue-200 transition-colors duration-300">Olá, {loginUsername.split(' ')[0]}</a></li> {/* Personalized greeting */}
+                        {userRole === 'admin' && (
+                            <li><a href="#" onClick={() => setCurrentPage('admin')} className="hover:text-blue-200 transition-colors duration-300">Painel Admin</a></li>
+                        )}
+                        <li><a href="#" onClick={handleLogout} className="hover:text-blue-200 transition-colors duration-300">Sair</a></li> {/* Added Sair button */}
+                    </ul>
+                </nav>
+            </div>
+          </header>
+
+          <main className="max-w-7xl mx-auto py-8 p-4 sm:p-6 lg:p-8">
+            <h1 className="text-4xl font-extrabold text-gray-900 text-center mb-10">
+              <i className="fas fa-hand-holding-heart text-indigo-600 mr-3"></i> Painel de Voluntariado
+            </h1>
+
+            {message && (
+              <div className={`mb-6 p-4 text-sm rounded-lg text-center shadow-md ${message.type === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                {message.text}
+              </div>
+            )}
+
+            <div className="text-center mb-6 text-gray-600">
+              Seu ID de Usuário: <span className="font-mono bg-gray-200 px-3 py-1 rounded-md text-sm">{userId}</span>
+            </div>
+
+            {currentPage === 'profile' ? (
+              // User Profile View
+              <section className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 mb-8">
+                <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center">
+                  <i className="fas fa-user-circle text-blue-500 mr-2"></i> Meu Perfil
+                </h2>
+                <div className="flex flex-col items-center mb-6">
+                  <img 
+                    src={profileImageUrl} 
+                    alt="Foto de Perfil" 
+                    className="w-32 h-32 rounded-full object-cover border-4 border-blue-400 shadow-lg mb-4"
+                    onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/100x100/CCCCCC/FFFFFF?text=Avatar" }} // Fallback image on error
+                  />
+                  <h3 className="text-xl font-semibold text-gray-900 mb-2">Olá, {loginUsername}!</h3> {/* Personalized greeting */}
+                  <p className="text-gray-600 text-sm mb-4">ID do Usuário: {userId}</p>
+
+                  <div className="w-full max-w-md">
+                    <label htmlFor="profilePhotoUrl" className="block text-sm font-medium text-gray-700 mb-1">
+                      Cole o link da sua foto aqui (URL de imagem externa)
+                    </label>
+                    <input
+                      type="text"
+                      id="profilePhotoUrl"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 mb-3"
+                      placeholder="Ex: https://exemplo.com/minha-foto.jpg"
+                      value={profileImageUrl === 'https://placehold.co/100x100/CCCCCC/FFFFFF?text=Avatar' ? '' : profileImageUrl} // Clear placeholder text
+                      onChange={(e) => setProfileImageUrl(e.target.value)}
+                    />
+                    <p className="text-gray-500 text-xs mb-3 text-center">
+                      **Dica para Admin:** Para "arrastar ou carregar", você precisaria de um serviço de armazenamento de arquivos (como Google Drive com link público ou Imgur). Por enquanto, cole a URL de uma imagem existente.
+                    </p>
+                    <button
+                      onClick={handleUpdateProfileImage}
+                      className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition-colors duration-300 font-medium shadow-md"
+                    >
+                      Atualizar Foto
+                    </button>
+                  </div>
+                </div>
+              </section>
+            ) : currentPage === 'news' ? (
+              // News Section - Dynamic content from Firestore
+              <section className="mb-8 bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                  <h2 className="text-2xl font-semibold text-gray-800 mb-6 border-b-2 border-blue-500 pb-2">Notícias e Anúncios da Igreja</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {newsArticles.length === 0 ? (
+                          <p className="text-gray-500 italic col-span-full">Nenhuma notícia ou anúncio disponível.</p>
+                      ) : (
+                          newsArticles.map(article => (
+                              <div key={article.id} className="bg-gray-50 p-5 rounded-lg shadow-md hover:shadow-xl transition-shadow duration-300 flex flex-col relative"> {/* Added relative for "NOVIDADE" positioning */}
+                                  {/* "NOVIDADE" tag - check if article is recent (e.g., within last 48 hours) */}
+                                  {new Date(article.timestamp).getTime() > (Date.now() - 48 * 60 * 60 * 1000) && (
+                                      <span className="absolute top-2 right-2 bg-purple-600 text-white text-xs font-bold px-2 py-1 rounded-full">NOVIDADE</span>
+                                  )}
+                                  {article.imageUrl && (
+                                      <img 
+                                          src={article.imageUrl} 
+                                          alt={article.title} 
+                                          className="w-full h-32 object-cover rounded-md mb-3"
+                                          onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/300x128/CCCCCC/FFFFFF?text=Noticia" }}
+                                      />
+                                  )}
+                                  <h3 className="text-xl font-semibold text-gray-900 mb-2">{article.title}</h3>
+                                  <p className="text-gray-600 text-sm mb-3 flex-grow">{article.description}</p>
+                                  {article.link && (
+                                      <a href={article.link} target="_blank" rel="noopener noreferrer" 
+                                         className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition-colors duration-300 font-medium shadow-md text-center mt-auto">
+                                          Saiba Mais
+                                      </a>
+                                  )}
+                              </div>
+                          ))
+                      )}
+                  </div>
+                  <div className="mt-8 text-center text-gray-600">
+                    <p>Aqui você verá notícias e anúncios importantes. Funcionalidades de "reagir" e "comentar" em artigos de notícias serão adicionadas em breve!</p>
+                  </div>
+              </section>
+            ) : currentPage === 'admin' && userRole === 'admin' ? (
+                // Admin Panel Section - Only for Admin
+                <section className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 mb-8">
+                    <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center">
+                        <i className="fas fa-cogs text-red-500 mr-2"></i> Painel de Administração
+                    </h2>
+
+                    {/* Manage Main Banner */}
+                    <div className="mb-8 border-b-2 border-gray-200 pb-6">
+                        <h3 className="text-xl font-semibold text-gray-800 mb-4">Gerenciar Banner Principal</h3>
+                        <form onSubmit={handleUpdateMainBanner} className="space-y-4">
+                            <div>
+                                <label htmlFor="bannerImageUrl" className="block text-sm font-medium text-gray-700">URL da Imagem do Banner</label>
+                                <input type="text" id="bannerImageUrl" name="bannerImageUrl" placeholder="Link para a imagem do banner" className="w-full px-3 py-2 border rounded-lg focus:ring-blue-500 focus:border-blue-500" defaultValue={mainBanner.imageUrl} required />
+                            </div>
+                            <div>
+                                <label htmlFor="bannerLink" className="block text-sm font-medium text-gray-700">Link do Banner (opcional)</label>
+                                <input type="url" id="bannerLink" name="bannerLink" placeholder="Link ao clicar no banner" className="w-full px-3 py-2 border rounded-lg focus:ring-blue-500 focus:border-blue-500" defaultValue={mainBanner.link} />
+                            </div>
+                            <button type="submit" className="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition duration-300">Atualizar Banner</button>
+                        </form>
+                    </div>
+
+                    {/* Add New News Article Form */}
+                    <div className="mb-8 border-b-2 border-gray-200 pb-6">
+                        <h3 className="text-xl font-semibold text-gray-800 mb-4">Adicionar Nova Notícia / Anúncio</h3>
+                        <form onSubmit={handleAddNewsArticle} className="space-y-4">
+                            <div>
+                                <label htmlFor="newsTitle" className="block text-sm font-medium text-gray-700">Título</label>
+                                <input type="text" id="newsTitle" name="newsTitle" placeholder="Título da notícia" className="w-full px-3 py-2 border rounded-lg focus:ring-blue-500 focus:border-blue-500" required />
+                            </div>
+                            <div>
+                                <label htmlFor="newsDescription" className="block text-sm font-medium text-gray-700">Descrição</label>
+                                <textarea id="newsDescription" name="newsDescription" placeholder="Descrição detalhada" rows="3" className="w-full px-3 py-2 border rounded-lg focus:ring-blue-500 focus:border-blue-500" required></textarea>
+                            </div>
+                            <div>
+                                <label htmlFor="newsImageUrl" className="block text-sm font-medium text-gray-700">URL da Imagem (opcional)</label>
+                                <input type="text" id="newsImageUrl" name="newsImageUrl" placeholder="Link para a imagem da notícia" className="w-full px-3 py-2 border rounded-lg focus:ring-blue-500 focus:border-blue-500" />
+                                <p className="text-gray-500 text-xs mt-1">Cole a URL de uma imagem hospedada externamente (ex: Google Drive com link público, Imgur).</p>
+                            </div>
+                            <div>
+                                <label htmlFor="newsLink" className="block text-sm font-medium text-gray-700">Link Externo (opcional)</label>
+                                <input type="url" id="newsLink" name="newsLink" placeholder="Link para mais detalhes" className="w-full px-3 py-2 border rounded-lg focus:ring-blue-500 focus:border-blue-500" />
+                            </div>
+                            <button type="submit" className="w-full bg-green-600 text-white py-2 px-4 rounded-lg hover:bg-green-700 transition duration-300">Adicionar Notícia</button>
+                        </form>
+                    </div>
+
+                    {/* Manage Existing News Articles */}
+                    <div className="mb-8 border-b-2 border-gray-200 pb-6">
+                        <h3 className="text-xl font-semibold text-gray-800 mb-4">Gerenciar Notícias Existentes</h3>
+                        {newsArticles.length === 0 ? (
+                            <p className="text-gray-500 italic">Nenhuma notícia para gerenciar.</p>
+                        ) : (
+                            <div className="space-y-4">
+                                {newsArticles.map(article => (
+                                    <div key={article.id} className="bg-gray-50 p-4 rounded-lg shadow-sm flex justify-between items-center">
+                                        <div>
+                                            <p className="font-semibold text-gray-900">{article.title}</p>
+                                            <p className="text-gray-600 text-sm">{article.description.substring(0, 100)}...</p>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button 
+                                                onClick={() => handleEditNewsArticle(article.id, article)}
+                                                className="text-blue-500 hover:text-blue-700 p-2 rounded-md transition duration-200"
+                                            >
+                                                <i className="fas fa-edit"></i>
+                                            </button>
+                                            <button 
+                                                onClick={() => handleDeleteNewsArticle(article.id)}
+                                                className="text-red-500 hover:text-red-700 p-2 rounded-md transition duration-200"
+                                            >
+                                                <i className="fas fa-trash-alt"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Manage Registered Users */}
+                    <div>
+                        <h3 className="text-xl font-semibold text-gray-800 mb-4">Gerenciar Voluntários Cadastrados</h3>
+                        {registeredUsers.length === 0 ? (
+                            <p className="text-gray-500 italic">Nenhum voluntário cadastrado ainda.</p>
+                        ) : (
+                            <div className="space-y-4">
+                                {registeredUsers.map(user => (
+                                    <div key={user.id} className="bg-gray-50 p-4 rounded-lg shadow-sm flex justify-between items-center">
+                                        <div>
+                                            <p className="font-semibold text-gray-900">{user.displayName} <span className="text-gray-500 text-sm">({user.role})</span></p>
+                                            <p className="text-gray-600 text-xs">ID: {user.firebaseUid}</p>
+                                        </div>
+                                        {user.displayName.toLowerCase() !== 'elpepe' && ( // Prevent deleting elpepe
+                                            <button 
+                                                onClick={() => handleDeleteUser(user.displayName, user.firebaseUid)}
+                                                className="text-red-500 hover:text-red-700 p-2 rounded-md transition duration-200"
+                                            >
+                                                <i className="fas fa-trash-alt"></i> Remover
+                                            </button>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </section>
+            ) : currentPage === 'agenda' ? (
+                // Agenda Section
+                <>
+                    <h2 className="text-3xl font-extrabold text-gray-900 text-center mb-8">
+                        Agenda de Eventos
+                    </h2>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                        {/* Eventos Próximos Section */}
+                        <div className="bg-white p-6 rounded-xl shadow-lg border-2 border-indigo-500 ring-4 ring-indigo-200 mb-8">
+                            <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center">
+                                <i className="fas fa-calendar-alt text-blue-500 mr-2"></i> Eventos Próximos
+                            </h2>
+                            {userRole === 'admin' && ( // Only show button for admin
+                                <button
+                                    onClick={() => setShowAddEventModal(true)}
+                                    className="mb-6 px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition duration-200 transform active:scale-98 shadow-md w-full"
+                                >
+                                    Adicionar Novo Evento
+                                </button>
+                            )}
+                            <div className="space-y-4">
+                                {upcomingEvents.length === 0 ? (
+                                    <p className="text-gray-500 italic">Nenhum evento próximo cadastrado ainda.</p>
+                                ) : (
+                                    upcomingEvents.map((event) => (
+                                        <div key={event.id} className="bg-gray-50 p-3 rounded-lg border border-gray-100 shadow-sm">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <span className="text-gray-800 font-medium text-lg">{event.name} <span className="text-gray-500 text-sm">({event.date ? event.date.toLocaleDateString('pt-BR') : 'Sem data'})</span></span>
+                                                {userRole === 'admin' && (
+                                                    <div className="flex gap-2">
+                                                        <button
+                                                            onClick={() => updateEvent(event.id, event)} // Pass event object to update function
+                                                            className="text-blue-500 hover:text-blue-700 p-1 rounded-md transition duration-200"
+                                                            title="Editar"
+                                                        >
+                                                            <i className="fas fa-edit"></i>
+                                                        </button>
+                                                        <button
+                                                            onClick={() => deleteEvent(event.id)}
+                                                            className="text-red-500 hover:text-red-700 p-1 rounded-md transition duration-200"
+                                                            title="Remover"
+                                                        >
+                                                            <i className="fas fa-trash-alt"></i>
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                            {event.imageUrl && ( // Display event image if available
+                                                <div className="my-3 text-center">
+                                                    <img 
+                                                        src={event.imageUrl} 
+                                                        alt={event.name} 
+                                                        className="w-full max-w-xs mx-auto rounded-lg shadow-md" 
+                                                        onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/300x100/CCCCCC/FFFFFF?text=Evento+Banner" }}
+                                                    />
+                                                </div>
+                                            )}
+                                            <div className="flex flex-wrap gap-2 justify-center mt-4 border-t border-gray-200 pt-4">
+                                                {['Feliz', 'Alegre', 'Surpreso', 'Interessado', 'Participarei'].map(reaction => (
+                                                    <button
+                                                        key={reaction}
+                                                        onClick={() => handleReactToEvent(event.id, reaction.toLowerCase())}
+                                                        className={`px-3 py-1 text-sm rounded-full transition-colors duration-200 flex items-center gap-1 ${getReactionButtonClass(reaction)}`}
+                                                    >
+                                                        {reaction} ({event.reactions?.[reaction.toLowerCase()] || 0})
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            <div className="mt-4 border-t border-gray-200 pt-4">
+                                                <h4 className="text-md font-semibold text-gray-700 mb-2">Comentários:</h4>
+                                                <div className="space-y-2 max-h-40 overflow-y-auto pr-2">
+                                                    {commentsByEvent[event.id] && commentsByEvent[event.id].length > 0 ? (
+                                                        commentsByEvent[event.id].map(comment => (
+                                                            <div key={comment.id} className="bg-white p-2 rounded-lg shadow-sm text-gray-700 text-sm flex items-start gap-2">
+                                                                <img
+                                                                    src={comment.profileImageUrl || 'https://placehold.co/30x30/CCCCCC/FFFFFF?text=Anon'}
+                                                                    alt="Avatar"
+                                                                    className="w-7 h-7 rounded-full object-cover flex-shrink-0"
+                                                                    onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/30x30/CCCCCC/FFFFFF?text=Anon" }}
+                                                                />
+                                                                <div>
+                                                                    <span className="font-semibold">{comment.commentedByName || 'Anônimo'}</span>: {comment.text}
+                                                                    <p className="text-gray-500 text-xs mt-1">
+                                                                        {new Date(comment.timestamp).toLocaleDateString('pt-BR')} às {new Date(comment.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                                                                    </p>
+                                                                </div>
+                                                            </div>
+                                                        ))
+                                                    ) : (
+                                                        <p className="text-gray-500 text-sm italic">Nenhum comentário ainda.</p>
+                                                    )}
+                                                </div>
+                                                <div className="mt-3 flex gap-2">
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Adicione um comentário..."
+                                                        className="flex-grow px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm text-gray-800"
+                                                        id={`commentInput-${event.id}`}
+                                                    />
+                                                    <button
+                                                        onClick={() => {
+                                                            const commentInput = document.getElementById(`commentInput-${event.id}`);
+                                                            handleAddComment(event.id, commentInput.value);
+                                                            commentInput.value = '';
+                                                        }}
+                                                        className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors duration-300 font-medium shadow-md"
+                                                    >
+                                                        Comentar
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Google Calendar Embed Section */}
+                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 col-span-1 lg:col-span-1">
+                            <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center">
+                                <i className="fas fa-calendar-check text-indigo-500 mr-2"></i> Calendário de Eventos (Google)
+                            </h2>
+                            <div dangerouslySetInnerHTML={{ __html: googleCalendarEmbed }} />
+                            <p className="text-gray-600 text-xs mt-4">
+                                **Observação:** O calendário do Google é exibido aqui como um embed. Não é possível sincronizar automaticamente os eventos diretamente do Google Calendar para o aplicativo (ou vice-versa) sem o uso de APIs adicionais do Google e um backend. Os eventos que você adiciona neste app são gerenciados no Firestore.
+                            </p>
+                        </div>
+                    </div>
+                    {/* Eventos Recentes Section (moved to Agenda) */}
+                    <section className="mt-8 bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                        <h2 className="text-2xl font-bold text-gray-800 mb-6 border-b-2 border-blue-500 pb-2">Eventos Recentes</h2>
+                        <p className="text-gray-600 text-sm mb-4">Aqui estão os eventos que já aconteceram, de forma minimalista:</p>
+                        <div className="space-y-4">
+                            {pastEvents.length === 0 ? (
+                                <p className="text-gray-500 italic">Nenhum evento recente para exibir.</p>
+                            ) : (
+                                pastEvents.map((event) => (
+                                    <div key={event.id} className="bg-gray-50 p-3 rounded-lg shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center text-gray-800">
+                                        <span className="font-semibold mb-1 sm:mb-0">{event.name}</span>
+                                        <span className="text-gray-500 text-sm">{event.date ? event.date.toLocaleDateString('pt-BR') : 'Sem data'}</span>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </section>
+                </>
+            ) : (
+              // Home Dashboard View (default) - Now with banner and news
+              <>
+                {/* Main Banner Section */}
+                <section className="mb-8 bg-white p-4 rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+                    {mainBanner.imageUrl && (
+                        <a href={mainBanner.link || '#'} target={mainBanner.link ? "_blank" : "_self"} rel="noopener noreferrer">
+                            <img
+                                src={mainBanner.imageUrl}
+                                alt="Banner Principal"
+                                className="w-full h-auto object-cover rounded-lg shadow-md"
+                                onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/1200x300/4F46E5/FFFFFF?text=Banner+Padrao" }}
+                            />
+                        </a>
+                    )}
+                    {!mainBanner.imageUrl && (
+                        <p className="text-gray-500 text-center py-10">Nenhum banner configurado. O Admin pode adicionar um no Painel Admin.</p>
+                    )}
+                </section>
+
+                <h2 className="text-3xl font-extrabold text-gray-900 text-center mb-8">
+                  Notícias e Avisos Mais Recentes
+                </h2>
+
+                {/* Highlighted News Articles - Moved from News tab to Home */}
+                <section className="mb-8 bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                    <h2 className="text-2xl font-semibold text-gray-800 mb-6 border-b-2 border-blue-500 pb-2">Destaques</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {newsArticles.length === 0 ? (
+                            <p className="text-gray-500 italic col-span-full">Nenhuma notícia ou anúncio disponível.</p>
+                        ) : (
+                            newsArticles.map(article => (
+                                <div key={article.id} className="bg-gray-50 p-5 rounded-lg shadow-md hover:shadow-xl transition-shadow duration-300 flex flex-col relative">
+                                    {new Date(article.timestamp).getTime() > (Date.now() - 48 * 60 * 60 * 1000) && (
+                                        <span className="absolute top-2 right-2 bg-purple-600 text-white text-xs font-bold px-2 py-1 rounded-full">NOVIDADE</span>
+                                    )}
+                                    {article.imageUrl && (
+                                        <img
+                                            src={article.imageUrl}
+                                            alt={article.title}
+                                            className="w-full h-32 object-cover rounded-md mb-3"
+                                            onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/300x128/CCCCCC/FFFFFF?text=Noticia" }}
+                                        />
+                                    )}
+                                    <h3 className="text-xl font-semibold text-gray-900 mb-2">{article.title}</h3>
+                                    <p className="text-gray-600 text-sm mb-3 flex-grow">{article.description}</p>
+                                    {article.link && (
+                                        <a href={article.link} target="_blank" rel="noopener noreferrer"
+                                           className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition-colors duration-300 font-medium shadow-md text-center mt-auto">
+                                            Saiba Mais
+                                        </a>
+                                    )}
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </section>
+              </>
+            )}
+          </main>
+        </div>
+      );
+    }
+  };
+
+  return (
+    <>
+      {/* Font Awesome for icons */}
+      <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet" />
+      {/* Inter Font for general text */}
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+      {/* Tailwind CSS CDN */}
+      <script src="https://cdn.tailwindcss.com"></script>
+      {/* Conditional body background to ensure login screen matches desired style */}
+      <style>
+        {`
+          body {
+            font-family: 'Inter', sans-serif;
+            ${isLoggedIn ? 'background-color: #f0f2f5;' : ''} /* Only set background for logged in state */
+          }
+        `}
+      </style>
+      {renderContent()}
+
+      {/* Footer Navigation from HTML visual (always visible) */}
+      <footer className="bg-gray-800 text-white p-4 rounded-t-xl shadow-inner">
+          <div className="container mx-auto text-center text-sm">
+              &copy; 2025 MÍDIA IBG. Todos os direitos reservados. {/* Changed footer title */}
+          </div>
+      </footer>
+    </>
+  );
+};
+
+export default App;
